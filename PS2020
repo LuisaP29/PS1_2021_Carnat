@@ -1,0 +1,462 @@
+//cod nou
+
+#include <LiquidCrystal.h>
+#include <EEPROM.h>
+#define BUTTONS A0 
+#define BEC A2
+int Temp =A1; 
+
+LiquidCrystal lcd( 8, 9, 4, 5, 6, 7);
+
+float temperatura_citita_senzor;
+int temp;
+float output;
+int kp, ki, kd;
+int tIncal, tMen, tRac;
+double eroare= 0, suma_erori= 0, eroare_anterioara = 0, derivativa = 0, moving_sp;
+double dt= 0.25;
+int change = 0;
+unsigned long uptime = -1;
+int timp_inc , timp_men, timp_rac;
+
+void setup()
+{
+  Serial.begin(9600);
+  lcd.begin(16,2);
+  pinMode(A2,OUTPUT);
+ /* EEPROM.put(0, 3);
+  EEPROM.put(4, 4);
+  EEPROM.put(8, 7);
+  EEPROM.put(12, 28);
+  EEPROM.put(20, 15);
+  EEPROM.put(24, 5);
+  EEPROM.put(28, 8);*/
+  EEPROM.get(0, kp);
+  EEPROM.get(4, ki);
+  EEPROM.get(8, kd);
+  EEPROM.get(12, temp);
+  EEPROM.get(20, tIncal);
+  EEPROM.get(24, tMen);
+  EEPROM.get(28, tRac);
+  
+}
+
+enum Buttons {
+  EV_OK,
+  EV_CANCEL,
+  EV_NEXT,
+  EV_PREV,
+  EV_NONE,
+  EV_MAX_NUM
+};
+
+enum Menus {
+  MENU_MAIN = 0,
+  MENU_PORNIRE,
+  MENU_KP,
+  MENU_KI, 
+  MENU_KD,
+  MENU_TEMP,
+  MENU_TIMP_INC,
+  MENU_TIMP_MEN,
+  MENU_TIMP_RAC,
+  MENU_MAX_NUM
+};
+
+Menus scroll_menu = MENU_MAIN;
+Menus current_menu =  MENU_MAIN;
+
+void state_machine(enum Menus menu, enum Buttons button);
+Buttons GetButtons(void);
+void print_menu(enum Menus menu);
+
+typedef void (state_machine_handler_t)(void);
+
+
+void print_menu(enum Menus menu)
+{
+  lcd.clear();
+  switch(menu)
+  {
+    case MENU_PORNIRE:
+      lcd.setCursor(0, 0);
+      lcd.print("PORNIRE PROCES");
+      break;
+    case MENU_KP:
+      lcd.setCursor(0,0);
+      lcd.print("KP = ");
+      lcd.setCursor(5,0);
+      lcd.print(kp);
+      break;
+    case MENU_KI:
+      lcd.setCursor(0,0);
+      lcd.print("KI = ");
+      lcd.setCursor(5,0);
+      lcd.print(ki);
+      break;
+    case MENU_KD:
+      lcd.setCursor(0,0);
+      lcd.print("KD = ");
+      lcd.setCursor(5,0);
+      lcd.print(kd);
+      break;
+    case MENU_TEMP:
+      lcd.setCursor(0,0);
+      lcd.print("TEMP = ");
+      lcd.setCursor(7,0);
+      lcd.print(temp);
+      break;
+    case MENU_TIMP_INC:
+      lcd.setCursor(0,0);
+      lcd.print("TIMP INC = ");
+      lcd.setCursor(11,0);
+      lcd.print(tIncal);
+      break;
+    case MENU_TIMP_MEN:
+      lcd.setCursor(0,0);
+      lcd.print("TIMP MEN = ");
+      lcd.setCursor(11,0);
+      lcd.print(tMen);
+      break;
+    case MENU_TIMP_RAC:
+      lcd.setCursor(0,0);
+      lcd.print("TIMP RAC = ");
+      lcd.setCursor(11,0);
+      lcd.print(tRac);
+      break;
+    case MENU_MAIN:
+      lcd.setCursor(0,0);
+      lcd.print("PS 2020");
+      lcd.setCursor(0,1);
+      lcd.print("CARNAT LUISA");
+    default:
+      break;
+  }
+    if (current_menu == MENU_PORNIRE)
+  {
+    lcd.clear();
+    afisare_timp();
+  }
+  else if (current_menu != MENU_MAIN)
+  {
+    lcd.setCursor(0, 1);
+    lcd.print("MODIFICA");
+    lcd.print(menu);
+  }
+}
+
+void enter_menu(void)
+{
+  current_menu = scroll_menu;
+}
+
+void go_home(void)
+{
+  scroll_menu = MENU_MAIN;
+  current_menu = scroll_menu;
+}
+
+void go_next(void)
+{
+  scroll_menu = (Menus) ((int)scroll_menu + 1);
+  scroll_menu = (Menus) ((int)scroll_menu % MENU_MAX_NUM);
+}
+
+void go_prev(void)
+{
+  scroll_menu = (Menus) ((int)scroll_menu - 1);
+  scroll_menu = (Menus) ((int)scroll_menu % MENU_MAX_NUM);
+}
+
+void save_kp(void)
+{
+  EEPROM.put(0, kp);
+  go_home();
+}
+
+void inc_kp(void)
+{
+  kp++;
+  change++;
+}
+
+void dec_kp(void)
+{
+  kp--;
+  change--;
+}
+
+void cancel_kp (void)
+{
+  kp-= change;
+  go_home();
+}
+
+void save_ki(void)
+{
+  EEPROM.put(4, ki);
+  go_home();
+}
+
+void inc_ki(void)
+{
+  ki++;
+  change++;
+}
+
+void dec_ki(void)
+{
+  ki--;
+  change--;
+}
+
+void cancel_ki (void)
+{
+  ki-= change;
+  go_home();
+}
+
+void save_kd(void)
+{
+  EEPROM.put(8, kd);
+  go_home();
+}
+
+void inc_kd(void)
+{
+  kd++;
+}
+
+void dec_kd(void)
+{
+  kd--;
+  change--;
+}
+
+void cancel_kd (void)
+{
+  kp-= change;
+  go_home();
+}
+
+void save_temp(void)
+{
+  EEPROM.put(12, temp);
+  go_home();
+}
+
+void inc_temp(void)
+{
+  temp++;
+  change++;
+}
+
+void dec_temp(void)
+{
+  temp--;
+  change--;
+}
+
+void cancel_temp (void)
+{
+  temp-= change;
+  go_home();
+}
+
+void save_incalzire(void)
+{
+  EEPROM.put(20, tIncal);
+  go_home();
+}
+
+void inc_incalzire(void)
+{
+  tIncal++;
+  change++;
+}
+
+void dec_incalzire(void)
+{
+  tIncal--;
+  change--;
+}
+
+void cancel_incalzire (void)
+{
+  tIncal -= change;
+  go_home();
+}
+
+void save_mentinere(void)
+{
+  EEPROM.put(24, tMen);
+  go_home();
+}
+
+void inc_mentinere(void)
+{
+  tMen++;
+  change++;
+}
+
+void dec_mentinere(void)
+{
+  tMen--;
+  change--;
+}
+
+void cancel_mentinere (void)
+{
+  tMen-= change;
+  go_home();
+}
+
+void save_racire(void)
+{
+  EEPROM.put(28, tRac);
+  go_home();
+}
+
+void inc_racire(void)
+{
+  tRac++;
+  change++;
+}
+
+void dec_racire(void)
+{
+  tRac--;
+  change--;
+}
+
+void cancel_racire (void)
+{
+  tRac -= change;
+  go_home();
+}
+
+void continua(void)
+{
+  return 1;
+}
+void PID()
+{
+  
+eroare = moving_sp - temperatura_citita_senzor;
+    
+  suma_erori= suma_erori + eroare *dt;
+    
+  derivativa = (eroare - eroare_anterioara) / dt;
+  
+  output = (kp * eroare) + (ki * suma_erori ) + (kd * derivativa);
+    
+  eroare_anterioara = eroare;
+  if(uptime<=tIncal)
+  {
+  analogWrite(BEC, 255 );
+  }
+  else if(uptime <= (timp_inc + timp_men))
+  {
+   analogWrite(BEC, 255 );
+  }
+  else analogWrite(BEC, 0 );
+}
+void afisare_timp(void)
+{
+  int min =0; int sec=0;
+    int remaining = 0;
+    timp_inc=tIncal;
+    timp_men=tMen;
+    timp_rac=tRac;
+    lcd.setCursor(0,0);
+    lcd.print("P:");
+    lcd.print(moving_sp);
+    uptime++;
+  
+    if(uptime<= timp_inc)
+    {
+      lcd.setCursor(0,1);
+      lcd.print("TInc:");
+      remaining = timp_inc - uptime;
+      moving_sp = temperatura_citita_senzor + (temp - temperatura_citita_senzor) * (timp_inc - remaining)/timp_inc;
+    }
+    else if(uptime <= (timp_inc + timp_men))
+    {
+      lcd.setCursor(0,1);
+      lcd.print("Tmen:");
+      remaining = (timp_inc +timp_men) - uptime;
+    }
+    else if( uptime <= (timp_inc + timp_men + timp_rac))
+    {
+      lcd.setCursor(0,1);
+      lcd.print("TRac: ");
+      analogWrite(BEC, 0);
+      remaining = (timp_inc + timp_men + timp_rac) - uptime;
+      moving_sp = temp - (temp - temperatura_citita_senzor) * (timp_rac - remaining)/timp_rac;
+    }
+    else
+    {
+      lcd.setCursor(0,1);
+      lcd.print("Oprit: ");
+    }
+  
+    min = remaining / 60;
+    sec = remaining % 60;
+    lcd.print(min);lcd.print(":");lcd.print(sec);
+    PID();
+}
+
+
+state_machine_handler_t* sm[MENU_MAX_NUM][EV_MAX_NUM] = 
+{ //events: OK , CANCEL , NEXT, PREV
+  {enter_menu, go_home, go_next, go_prev},  // MENU_MAIN
+  {continua, go_home, continua, continua},  // MENU_PORNIRE
+  {save_kp, cancel_kp, inc_kp, dec_kp},       // MENU_KP
+  {save_ki, cancel_ki, inc_ki, dec_ki},       // MENU_KI
+  {save_kd, cancel_kd, inc_kd, dec_kd},       // MENU_KD
+  {save_temp, cancel_temp, inc_temp, dec_temp},   // MENU_TEMP
+  {save_incalzire, cancel_incalzire, inc_incalzire, dec_incalzire},  // MENU_TIMP_INC
+  {save_mentinere, cancel_mentinere, inc_mentinere, dec_mentinere},  // MENU_TIMP_MEN
+  {save_racire, cancel_racire, inc_racire, dec_racire}            // MENU_TIMP_RAC
+};
+
+void state_machine(enum Menus menu, enum Buttons button)
+{
+  sm[menu][button]();
+}
+
+Buttons GetButtons(void)
+{
+  int x;
+  x=analogRead(BUTTONS);
+  enum Buttons ret_val = EV_NONE;
+  if (x<60)
+  {
+    ret_val = EV_OK;
+  }
+  else if (x<200)
+  {
+    ret_val = EV_NEXT;
+  }
+  else if (x<400)
+  {
+    ret_val = EV_PREV;
+  }
+  else if (x<600)
+  {
+    ret_val = EV_CANCEL;
+  }
+
+  return ret_val;
+}
+void loop()
+{
+  temperatura_citita_senzor=23;
+  volatile Buttons event = GetButtons();
+  if (event != EV_NONE)
+  {
+    state_machine(current_menu, event);
+  }
+    print_menu(scroll_menu);
+    delay(1000);
+}
